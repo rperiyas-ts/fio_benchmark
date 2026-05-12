@@ -1,0 +1,15 @@
+[global]
+ioengine=libaio
+direct=1
+runtime=900
+time_based=1
+iodepth=1
+numjobs=1
+group_reporting=1
+size=4T
+bs=1m
+rw=write
+name=zfs_seq_write_1mb
+
+# filename points to ZFS mountpoint (e.g. /mnt/zfspool/fio_test)
+# set by the benchmark script at runtime

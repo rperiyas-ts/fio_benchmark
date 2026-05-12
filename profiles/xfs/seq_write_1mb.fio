@@ -1,0 +1,14 @@
+[global]
+ioengine=libaio
+direct=1
+runtime=900
+time_based=1
+iodepth=1
+numjobs=1
+group_reporting=0
+size=4T
+bs=1m
+rw=write
+name=xfs_seq_write_1mb
+
+# filename is set per-drive by the benchmark script (e.g. /mnt/xfs_sdX/fio_test)

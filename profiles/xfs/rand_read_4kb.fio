@@ -1,0 +1,12 @@
+[global]
+ioengine=libaio
+direct=1
+runtime=900
+time_based=1
+iodepth=1
+numjobs=1
+group_reporting=0
+size=4T
+bs=4k
+rw=randread
+name=xfs_rand_read_4kb

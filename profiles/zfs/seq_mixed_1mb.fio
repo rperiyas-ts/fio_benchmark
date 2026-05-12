@@ -1,0 +1,13 @@
+[global]
+ioengine=libaio
+direct=1
+runtime=900
+time_based=1
+iodepth=1
+numjobs=1
+group_reporting=1
+size=4T
+bs=1m
+rw=randrw
+rwmixread=70
+name=zfs_seq_mixed_1mb

@@ -1,0 +1,12 @@
+[global]
+ioengine=libaio
+direct=1
+runtime=900
+time_based=1
+iodepth=1
+numjobs=1
+group_reporting=0
+size=4T
+bs=1m
+rw=read
+name=raw_seq_read_1mb
