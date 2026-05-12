@@ -47,8 +47,8 @@ dnf install fio
 ### 1. Edit drive list in `run_benchmark.py`
 ```python
 DRIVES = [
-    "/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd",
-    "/dev/sde", "/dev/sdf", "/dev/sdg", "/dev/sdh",
+    "/dev/nvme8n1", "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1",
+    "/dev/nvme4n1", "/dev/nvme5n1", "/dev/nvme6n1", "/dev/nvme7n1",
 ]
 ```
 
@@ -56,7 +56,7 @@ DRIVES = [
 Create and mount one XFS per drive. Script expects `/mnt/xfs_<devname>`:
 
 ```bash
-for dev in sda sdb sdc sdd sde sdf sdg sdh; do
+for dev in nvme0n1 nvme1n1 nvme2n1 nvme3n1 nvme4n1 nvme5n1 nvme6n1 nvme7n1; do
     sudo mkfs.xfs -f /dev/$dev
     sudo mkdir -p /mnt/xfs_$dev
     sudo mount /dev/$dev /mnt/xfs_$dev
@@ -64,7 +64,7 @@ done
 ```
 
 ### 3. Create and mount ZFS pool
-Script expects the pool mounted at `/mnt/zfspool`:
+Script expects the pool mounted at `/bryck`:
 Do create the zfs mount using bryck UI, don't use below cmds.
 
 ```bash
