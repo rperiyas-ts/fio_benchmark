@@ -35,7 +35,8 @@ RUNTIME_SECONDS = 10          # 900 s = 15 minutes
 
 # --- Block devices ---------------------------------------------------------
 DRIVES = [
-    "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1", "/dev/nvme4n1"
+    "/dev/nvme0n1", "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1",
+    "/dev/nvme4n1", "/dev/nvme5n1", "/dev/nvme6n1", "/dev/nvme7n1",
 ]
 # DRIVES = [
 #     "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1", "/dev/nvme4n1",
@@ -48,8 +49,8 @@ DRIVES = [
 XFS_MOUNT_BASE = "/mnt/xfs"
 
 # --- ZFS: all 8 drives combined into a single pool -------------------------
-ZFS_POOL_NAME   = "benchpool"
-ZFS_MOUNT_POINT = "/mnt/zfspool"
+ZFS_POOL_NAME   = "bryckdata"
+ZFS_MOUNT_POINT = "/bryck"
 
 # ===========================================================================
 # (no edits needed below this line for standard usage)
