@@ -148,6 +148,48 @@ benchmark run, useful for debugging or manual re-runs.
 | Avg Clat µs  | Average completion latency (µs)      |
 
 Per-drive rows are shown first, followed by an **AGGREGATED** row summing
+
+---
+
+## Thermal Monitoring
+
+The `thermal_monitoring.sh` script monitors NVMe drive temperatures during benchmark runs using `nvme smart-log`.
+
+### What it does
+- Polls all NVMe devices every 15 seconds
+- Logs timestamp, device path, serial number, and temperature
+- Appends output to `new_enclosure_test_temps.txt`
+
+### Prerequisites
+```bash
+# Install nvme-cli
+apt install nvme-cli    # Debian/Ubuntu
+dnf install nvme-cli    # RHEL/Fedora
+```
+
+### Running
+```bash
+# Add execute permission
+chmod +x thermal_monitoring.sh
+
+# Run with sudo (required for nvme commands)
+sudo ./thermal_monitoring.sh
+
+# Run in background during benchmarks
+sudo ./thermal_monitoring.sh &
+
+# Stop monitoring
+pkill -f thermal_monitoring.sh
+```
+
+### Sample Output
+```
+Wed May 14 10:30:00 UTC 2026
+--------------------------------------------------
+/dev/nvme0n1 | SN: ABC123456789 | Temp: 45 C
+/dev/nvme1n1 | SN: DEF987654321 | Temp: 47 C
+...
+```
 IOPs/BW and averaging clat across all drives in that tier/profile.
 
 ---

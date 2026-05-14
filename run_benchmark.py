@@ -31,7 +31,7 @@ from pathlib import Path
 # ===========================================================================
 
 # --- Runtime (seconds) applied to every profile across all tiers ----------
-RUNTIME_SECONDS = 10          # 900 s = 15 minutes
+RUNTIME_SECONDS = 900          # 900 s = 15 minutes
 
 # --- Block devices ---------------------------------------------------------
 DRIVES = [
