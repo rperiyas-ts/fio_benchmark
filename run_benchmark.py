@@ -27,30 +27,15 @@ from datetime import datetime
 from pathlib import Path
 
 # ===========================================================================
-# !! EDIT THIS SECTION TO MATCH YOUR ENVIRONMENT !!
+# !! EDIT THESE only if auto-detection does not work in your environment !!
 # ===========================================================================
 
-# --- Runtime (seconds) applied to every profile across all tiers ----------
-RUNTIME_SECONDS = 900          # 900 s = 15 minutes
-
-# --- Block devices ---------------------------------------------------------
-DRIVES = [
-    "/dev/nvme0n1", "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1",
-    "/dev/nvme4n1", "/dev/nvme5n1", "/dev/nvme6n1", "/dev/nvme7n1",
-]
-# DRIVES = [
-#     "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1", "/dev/nvme4n1",
-#     "/dev/nvme6n1", "/dev/nvme7n1", "/dev/nvme8n1", "/dev/nvme9n1",
-# ]
-
-
-# --- XFS: each drive is independently formatted and mounted ----------------
-#   Mount layout expected: /mnt/xfs_nvme1n1, /mnt/xfs_nvme2n1, etc.
-XFS_MOUNT_BASE = "/mnt/xfs"
-
-# --- ZFS: all 8 drives combined into a single pool -------------------------
+RUNTIME_SECONDS = 900           # 900 s = 15 minutes
+XFS_MOUNT_BASE  = "/mnt/xfs"    # Mount layout: /mnt/xfs_nvme1n1, /mnt/xfs_nvme2n1, etc.
 ZFS_POOL_NAME   = "bryckdata"
 ZFS_MOUNT_POINT = "/bryck"
+
+# No drive list needed — script auto-selects all NVMe drives except OS drive
 
 # ===========================================================================
 # (no edits needed below this line for standard usage)
@@ -93,6 +78,68 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("fio_bench")
+
+
+# ---------------------------------------------------------------------------
+# Drive Detection
+# ---------------------------------------------------------------------------
+
+def get_os_drive() -> str:
+    """Return base device name of the OS drive (e.g. 'nvme0n1')."""
+    root_src = subprocess.run(
+        ["findmnt", "-n", "-o", "SOURCE", "/"],
+        capture_output=True, text=True, check=True
+    ).stdout.strip()
+    # root_src could be a partition (/dev/nvme0n1p2) or LVM — walk up to disk
+    base = subprocess.run(
+        ["lsblk", "-no", "pkname", root_src],
+        capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return base  # e.g. 'nvme0n1'
+
+
+def detect_data_nvme_drives() -> list[str]:
+    """
+    Auto-select all NVMe block disks that are NOT the OS/boot drive.
+    No manual input needed — purely driven by what lsblk and findmnt report.
+    """
+    os_drive = get_os_drive()
+    log.info("OS drive detected (excluded) : /dev/%s", os_drive)
+
+    # All NVMe block disks on the system
+    result = subprocess.run(
+        ["lsblk", "-dno", "NAME,TYPE"],
+        capture_output=True, text=True, check=True
+    )
+
+    all_nvme, data_drives = [], []
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == "disk" and parts[0].startswith("nvme"):
+            dev = f"/dev/{parts[0]}"
+            all_nvme.append(dev)
+            if parts[0] != os_drive:
+                data_drives.append(dev)
+
+    log.info("All NVMe drives found        : %s", all_nvme)
+    log.info("Data drives selected         : %s", data_drives)
+
+    if not data_drives:
+        raise RuntimeError(
+            f"No data NVMe drives found after excluding OS drive "
+            f"(/dev/{os_drive}). All NVMe: {all_nvme}"
+        )
+
+    # Final safety check — hard abort if OS drive somehow slipped through
+    for dev in data_drives:
+        if Path(dev).name == os_drive:
+            raise RuntimeError(
+                f"SAFETY ABORT: OS drive /dev/{os_drive} was about to be "
+                f"included in benchmark targets. Aborting."
+            )
+
+    return data_drives
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +455,8 @@ def parse_args():
         help="Tiers to benchmark",
     )
     p.add_argument(
-        "--drives", nargs="+", default=DRIVES,
-        help="Block devices to benchmark",
+        "--drives", nargs="+", default=None,
+        help="Emergency override: manually specify drives (auto-detect is default)",
     )
     p.add_argument(
         "--runtime", type=int, default=RUNTIME_SECONDS,
@@ -424,12 +471,24 @@ def parse_args():
 
 def main():
     args    = parse_args()
-    drives  = args.drives
     runtime = args.runtime
 
     if shutil.which("fio") is None:
         log.error("fio not found. Install: apt install fio  |  dnf install fio")
         sys.exit(1)
+
+    # Drive selection: auto-detect by default, CLI override as emergency fallback
+    if args.drives:
+        # Emergency manual override — still guard against OS drive
+        os_drive = f"/dev/{get_os_drive()}"
+        if os_drive in args.drives:
+            log.error("ABORT: OS drive %s is in --drives list!", os_drive)
+            sys.exit(1)
+        drives = args.drives
+        log.info("Drive source         : CLI override (manual)")
+    else:
+        drives = detect_data_nvme_drives()
+        log.info("Drive source         : auto-detected NVMe data drives")
 
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     
@@ -439,11 +498,11 @@ def main():
     
     results = {}
 
-    log.info("Drives        : %s", drives)
-    log.info("Tiers         : %s", args.tiers)
-    log.info("Runtime       : %d s (%d min)", runtime, runtime // 60)
-    log.info("Profile dir   : %s", PROFILES_DIR)
-    log.info("Logs dir      : %s", log_dir)
+    log.info("Drives selected      : %s", drives)
+    log.info("Tiers                : %s", args.tiers)
+    log.info("Runtime              : %d s (%d min)", runtime, runtime // 60)
+    log.info("Profile dir          : %s", PROFILES_DIR)
+    log.info("Logs dir             : %s", log_dir)
 
     # -- Dry-run: show the generated job file for the first raw profile -----
     if args.dry_run:

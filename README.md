@@ -1,6 +1,8 @@
 # FIO Storage Benchmark Suite
 
-Benchmarks raw block, XFS, and ZFS performance across 8 drives using 6 I/O profiles.
+Benchmarks raw block, XFS, and ZFS performance across NVMe drives using 6 I/O profiles.
+
+**Auto-detection:** The script automatically discovers all NVMe drives and excludes the OS/boot drive — no manual configuration needed.
 
 ---
 
@@ -44,13 +46,11 @@ dnf install fio
 
 ## Setup Before Running
 
-### 1. Edit drive list in `run_benchmark.py`
-```python
-DRIVES = [
-    "/dev/nvme8n1", "/dev/nvme1n1", "/dev/nvme2n1", "/dev/nvme3n1",
-    "/dev/nvme4n1", "/dev/nvme5n1", "/dev/nvme6n1", "/dev/nvme7n1",
-]
-```
+### 1. Drive Detection (Automatic)
+The script auto-detects all NVMe drives and excludes the OS boot drive:
+- Works whether OS is on NVMe or SATA/HDD
+- Uses `findmnt` and `lsblk` to identify the boot disk
+- No manual drive list configuration needed
 
 ### 2. Mount XFS filesystems
 Create and mount one XFS per drive. Script expects `/mnt/xfs_<devname>`:
@@ -81,6 +81,9 @@ zfs set mountpoint=/mnt/zfspool benchpool
 ## Running
 
 ```bash
+# Preview auto-detected drives (recommended first step)
+sudo python3 run_benchmark.py --dry-run
+
 # All tiers (raw + xfs + zfs) — ~2.25 hours total
 sudo python3 run_benchmark.py
 
@@ -89,11 +92,16 @@ sudo python3 run_benchmark.py --tiers raw
 sudo python3 run_benchmark.py --tiers xfs
 sudo python3 run_benchmark.py --tiers zfs
 
-# Override drive list on the CLI
-sudo python3 run_benchmark.py --drives /dev/nvme0n1 /dev/nvme1n1
+# Emergency override (if auto-detect fails) — OS drive is still blocked
+sudo python3 run_benchmark.py --drives /dev/nvme1n1 /dev/nvme2n1
+```
 
-# Preview generated job file without running fio
-sudo python3 run_benchmark.py --dry-run
+### Startup Log
+```
+[10:01:00] INFO  OS drive detected (excluded) : /dev/nvme0n1
+[10:01:00] INFO  All NVMe drives found        : ['/dev/nvme0n1', '/dev/nvme1n1', ...]
+[10:01:00] INFO  Data drives selected         : ['/dev/nvme1n1', ...]
+[10:01:00] INFO  Drive source         : auto-detected NVMe data drives
 ```
 
 ---
