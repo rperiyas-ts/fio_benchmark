@@ -11,6 +11,11 @@ Benchmarks raw block, XFS, and ZFS performance across NVMe drives using 6 I/O pr
 ```
 fio_benchmark/
 ├── run_benchmark.py          # Main orchestration script
+├── lib/                      # Library modules
+│   ├── __init__.py
+│   ├── drives.py             # Drive detection utilities
+│   ├── xfs.py                # XFS filesystem management
+│   └── fio.py                # FIO execution and metrics
 ├── profiles/
 │   ├── raw/                  # Raw block device profiles
 │   │   ├── seq_write_1mb.fio
@@ -52,9 +57,11 @@ The script auto-detects all NVMe drives and excludes the OS boot drive:
 - Uses `findmnt` and `lsblk` to identify the boot disk
 - No manual drive list configuration needed
 
-### 2. Mount XFS filesystems
-Create and mount one XFS per drive. Script expects `/mnt/xfs_<devname>`:
+### 2. XFS filesystems (Auto-created)
+XFS filesystems are **automatically created and mounted** when running the XFS tier.
+The script handles `mkfs.xfs` and mounting for each data drive.
 
+**Manual setup (optional):** If you prefer to pre-create XFS mounts:
 ```bash
 for dev in nvme0n1 nvme1n1 nvme2n1 nvme3n1 nvme4n1 nvme5n1 nvme6n1 nvme7n1; do
     sudo mkfs.xfs -f /dev/$dev
@@ -64,7 +71,7 @@ done
 ```
 
 ### 3. Create and mount ZFS pool
-Script expects the pool mounted at `/bryck`:
+Script expects the pool mounted at `/bryck` by default (configurable via `--zfs-mount`).
 Do create the zfs mount using bryck UI, don't use below cmds.
 
 ```bash
@@ -89,8 +96,13 @@ sudo python3 run_benchmark.py
 
 # Specific tiers only
 sudo python3 run_benchmark.py --tiers raw
-sudo python3 run_benchmark.py --tiers xfs
+sudo python3 run_benchmark.py --tiers xfs   # auto-creates XFS on each drive
 sudo python3 run_benchmark.py --tiers zfs
+sudo python3 run_benchmark.py --tiers zfs --zfs-mount /bryck  # custom ZFS mount path
+
+# Custom runtime per profile (default: 900s / 15 minutes)
+sudo python3 run_benchmark.py --runtime 60      # 60 seconds per profile
+sudo python3 run_benchmark.py --runtime 1800    # 30 minutes per profile
 
 # Emergency override (if auto-detect fails) — OS drive is still blocked
 sudo python3 run_benchmark.py --drives /dev/nvme1n1 /dev/nvme2n1

@@ -20,26 +20,30 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
+# Import library functions
+from lib import (
+    get_os_drive,
+    detect_data_nvme_drives,
+    setup_xfs,
+    cleanup_xfs,
+    run_fio,
+    build_job_file,
+    extract_metrics,
+    aggregate_metrics,
+    format_table,
+)
+
 # ===========================================================================
-# !! EDIT THESE only if auto-detection does not work in your environment !!
+# Configuration
 # ===========================================================================
 
 RUNTIME_SECONDS = 900           # 900 s = 15 minutes
 XFS_MOUNT_BASE  = "/mnt/xfs"    # Mount layout: /mnt/xfs_nvme1n1, /mnt/xfs_nvme2n1, etc.
-ZFS_POOL_NAME   = "bryckdata"
 ZFS_MOUNT_POINT = "/bryck"
-
-# No drive list needed — script auto-selects all NVMe drives except OS drive
-
-# ===========================================================================
-# (no edits needed below this line for standard usage)
-# ===========================================================================
 
 SCRIPT_DIR   = Path(__file__).parent.resolve()
 PROFILES_DIR = SCRIPT_DIR / "profiles"
@@ -50,6 +54,7 @@ PROFILES = [
     "seq_write_1mb.fio",
     "seq_read_1mb.fio"
 ]
+# Full profile list (uncomment to run all):
 # PROFILES = [
 #     "seq_write_1mb.fio",
 #     "seq_read_1mb.fio",
@@ -68,9 +73,9 @@ PROFILE_LABELS = {
     "rand_mixed_4kb.fio": "Rand Mixed 4KB (70R/30W)",
 }
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Logging
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,249 +83,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("fio_bench")
-
-
-# ---------------------------------------------------------------------------
-# Drive Detection
-# ---------------------------------------------------------------------------
-
-def get_os_drive() -> str:
-    """Return base device name of the OS drive (e.g. 'nvme0n1')."""
-    root_src = subprocess.run(
-        ["findmnt", "-n", "-o", "SOURCE", "/"],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
-    # root_src could be a partition (/dev/nvme0n1p2) or LVM — walk up to disk
-    base = subprocess.run(
-        ["lsblk", "-no", "pkname", root_src],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
-    return base  # e.g. 'nvme0n1'
-
-
-def detect_data_nvme_drives() -> list[str]:
-    """
-    Auto-select all NVMe block disks that are NOT the OS/boot drive.
-    No manual input needed — purely driven by what lsblk and findmnt report.
-    """
-    os_drive = get_os_drive()
-    log.info("OS drive detected (excluded) : /dev/%s", os_drive)
-
-    # All NVMe block disks on the system
-    result = subprocess.run(
-        ["lsblk", "-dno", "NAME,TYPE"],
-        capture_output=True, text=True, check=True
-    )
-
-    all_nvme, data_drives = [], []
-
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == "disk" and parts[0].startswith("nvme"):
-            dev = f"/dev/{parts[0]}"
-            all_nvme.append(dev)
-            if parts[0] != os_drive:
-                data_drives.append(dev)
-
-    log.info("All NVMe drives found        : %s", all_nvme)
-    log.info("Data drives selected         : %s", data_drives)
-
-    if not data_drives:
-        raise RuntimeError(
-            f"No data NVMe drives found after excluding OS drive "
-            f"(/dev/{os_drive}). All NVMe: {all_nvme}"
-        )
-
-    # Final safety check — hard abort if OS drive somehow slipped through
-    for dev in data_drives:
-        if Path(dev).name == os_drive:
-            raise RuntimeError(
-                f"SAFETY ABORT: OS drive /dev/{os_drive} was about to be "
-                f"included in benchmark targets. Aborting."
-            )
-
-    return data_drives
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def run_fio(job_file: str, log_dir: Path = None) -> dict:
-    """Execute fio and return parsed JSON output.
-    
-    If log_dir is provided, saves the complete fio output to a file
-    named after the job file (e.g., raw_seq_write_1mb_output.json).
-    """
-    cmd = ["fio", "--output-format=json", job_file]
-    log.debug("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        log.error("fio failed:\n%s", result.stderr)
-        raise RuntimeError(f"fio exited {result.returncode}")
-    
-    # Save complete fio output if log_dir provided
-    if log_dir:
-        job_name = Path(job_file).stem  # e.g., raw_seq_write_1mb
-        output_file = log_dir / f"{job_name}_output.json"
-        with open(output_file, "w") as f:
-            f.write(result.stdout)
-        log.debug("Complete fio output → %s", output_file)
-    
-    return json.loads(result.stdout)
-
-
-def build_job_file(
-    base_profile: Path,
-    targets: dict[str, str],
-    runtime: int,
-    log_dir: Path = None,
-    tier: str = "",
-    profile_name: str = "",
-) -> str:
-    """
-    Merge a base profile with per-target [job] sections.
-    The runtime line in the profile is replaced with the central RUNTIME_SECONDS
-    value so profiles themselves never need editing.
-
-    targets      : {job_name: device_or_filepath}
-    log_dir      : directory to save the generated .fio file (if None, uses temp)
-    tier         : tier name for the filename (e.g., 'raw', 'xfs', 'zfs')
-    profile_name : profile name for the filename (e.g., 'seq_write_1mb')
-    Returns      : path to the generated .fio file.
-    """
-    with open(base_profile) as f:
-        lines = f.readlines()
-
-    cleaned = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#"):          # drop comment lines
-            continue
-        if stripped.startswith("runtime="):  # override with central value
-            cleaned.append(f"runtime={runtime}\n")
-        else:
-            cleaned.append(line)
-
-    base_content = "".join(cleaned)
-
-    job_sections = "\n".join(
-        f"\n[{name}]\nfilename={target}" for name, target in targets.items()
-    )
-
-    content = base_content + "\n" + job_sections + "\n"
-
-    if log_dir:
-        # Save to logs directory with meaningful name
-        filename = f"{tier}_{profile_name}.fio" if tier and profile_name else "bench.fio"
-        job_path = log_dir / filename
-        with open(job_path, "w") as f:
-            f.write(content)
-        return str(job_path)
-    else:
-        # Fallback to temp file (for dry-run or legacy usage)
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".fio", delete=False, prefix="bench_"
-        )
-        tmp.write(content)
-        tmp.flush()
-        tmp.close()
-        return tmp.name
-
-
-def extract_metrics(job: dict) -> dict:
-    """Return IOPs, avg completion latency (µs), and bandwidth (MiB/s)."""
-    read  = job.get("read",  {})
-    write = job.get("write", {})
-
-    def safe(d, *keys):
-        v = d
-        for k in keys:
-            v = v.get(k, {}) if isinstance(v, dict) else {}
-        return v if not isinstance(v, dict) else 0
-
-    iops_r = safe(read,  "iops")
-    iops_w = safe(write, "iops")
-    bw_r   = safe(read,  "bw")          # KiB/s
-    bw_w   = safe(write, "bw")
-    clat_r = safe(read,  "clat_ns", "mean")
-    clat_w = safe(write, "clat_ns", "mean")
-
-    total_iops = (iops_r or 0) + (iops_w or 0)
-    total_bw   = (bw_r   or 0) + (bw_w   or 0)
-
-    if total_iops > 0:
-        avg_clat_ns = (
-            (clat_r or 0) * (iops_r or 0) +
-            (clat_w or 0) * (iops_w or 0)
-        ) / total_iops
-    else:
-        avg_clat_ns = 0
-
-    return {
-        "iops_read":    round(iops_r or 0, 1),
-        "iops_write":   round(iops_w or 0, 1),
-        "iops_total":   round(total_iops,  1),
-        "bw_read_mbs":  round((bw_r or 0) / 1024, 2),
-        "bw_write_mbs": round((bw_w or 0) / 1024, 2),
-        "bw_total_mbs": round(total_bw     / 1024, 2),
-        "avg_clat_us":  round(avg_clat_ns  / 1000, 2),
-    }
-
-
-def aggregate_metrics(metrics_list: list[dict]) -> dict:
-    """Sum IOPs and BW across drives; mean clat."""
-    if not metrics_list:
-        return {}
-    keys_sum = ["iops_read", "iops_write", "iops_total",
-                 "bw_read_mbs", "bw_write_mbs", "bw_total_mbs"]
-    agg = {k: round(sum(m[k] for m in metrics_list), 2) for k in keys_sum}
-    agg["avg_clat_us"] = round(
-        sum(m["avg_clat_us"] for m in metrics_list) / len(metrics_list), 2
-    )
-    return agg
-
-
-def format_table(results: dict, runtime: int) -> str:
-    """Render benchmark results as a human-readable fixed-width table."""
-    col_w = 12
-    sep   = "-" * 116
-
-    header = (
-        f"{'Drive/Target':<24} {'IOPs R':>{col_w}} {'IOPs W':>{col_w}} "
-        f"{'IOPs Tot':>{col_w}} {'BW R MB/s':>{col_w}} {'BW W MB/s':>{col_w}} "
-        f"{'BW Tot MB/s':>{col_w}} {'Avg Clat µs':>{col_w}}"
-    )
-
-    def row(label, m):
-        return (
-            f"{label:<24} {m['iops_read']:>{col_w}.1f} {m['iops_write']:>{col_w}.1f} "
-            f"{m['iops_total']:>{col_w}.1f} {m['bw_read_mbs']:>{col_w}.2f} "
-            f"{m['bw_write_mbs']:>{col_w}.2f} {m['bw_total_mbs']:>{col_w}.2f} "
-            f"{m['avg_clat_us']:>{col_w}.2f}"
-        )
-
-    lines = [
-        "",
-        "=" * 116,
-        f"  FIO BENCHMARK RESULTS   runtime={runtime}s  iodepth=1  size=4T",
-        "=" * 116,
-        sep, header, sep,
-    ]
-
-    for tier, profiles in results.items():
-        lines += ["", f"{'':=<116}", f"  TIER: {tier.upper()}", f"{'':=<116}"]
-        for profile_name, drive_data in profiles.items():
-            lines += [f"\n  {PROFILE_LABELS.get(profile_name, profile_name)}", sep]
-            per_drive = drive_data.get("per_drive", {})
-            for drv, m in per_drive.items():
-                lines.append(row(f"    {drv}", m))
-            if "aggregated" in drive_data and drive_data["aggregated"]:
-                lines.append(sep)
-                lines.append(row("  *** AGGREGATED ***", drive_data["aggregated"]))
-            lines.append(sep)
-
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -358,27 +120,28 @@ def run_raw(drives: list[str], runtime: int, results: dict, log_dir: Path) -> No
 
 
 def run_xfs(drives: list[str], runtime: int, results: dict, log_dir: Path) -> None:
-    """XFS: all drives run in a single parallel fio invocation (like raw)."""
+    """XFS: all drives run in a single parallel fio invocation (like raw).
+    
+    Auto-creates XFS filesystems and mounts on drives that don't have them.
+    Uses the same drive detection as raw tier (excludes OS boot drive).
+    """
     log.info("=" * 60)
     log.info("TIER: XFS FILESYSTEM  (parallel, all drives)")
     log.info("=" * 60)
     results["xfs"] = {}
 
-    # Validate mounts up-front
-    valid_drives = []
-    for dev in drives:
-        dev_name = Path(dev).name
-        mount    = f"{XFS_MOUNT_BASE}_{dev_name}"
-        if Path(mount).is_mount():
-            valid_drives.append((dev_name, mount))
-        else:
-            log.warning("XFS mount %s not found — skipping %s", mount, dev)
+    # Auto-create XFS filesystems on drives that don't have mounts
+    log.info("Setting up XFS filesystems on data drives...")
+    valid_drives = setup_xfs(drives, XFS_MOUNT_BASE)
 
     if not valid_drives:
-        log.error("No XFS mounts available — skipping XFS tier entirely.")
+        log.error("No XFS filesystems could be created — skipping XFS tier entirely.")
         for p in PROFILES:
             results["xfs"][p] = {"per_drive": {}, "aggregated": {}}
         return
+    
+    log.info("XFS ready on %d drive(s): %s", 
+             len(valid_drives), [d[0] for d in valid_drives])
 
     for profile_file in PROFILES:
         base  = PROFILES_DIR / "xfs" / profile_file
@@ -403,17 +166,20 @@ def run_xfs(drives: list[str], runtime: int, results: dict, log_dir: Path) -> No
         }
         log.info("  Done. Aggregated IOPs: %.1f",
                  results["xfs"][profile_file]["aggregated"].get("iops_total", 0))
+    
+    # Cleanup: unmount XFS filesystems so drives can be used for raw I/O
+    cleanup_xfs(drives, XFS_MOUNT_BASE)
 
 
-def run_zfs(runtime: int, results: dict, log_dir: Path) -> None:
+def run_zfs(runtime: int, results: dict, log_dir: Path, zfs_mount: str) -> None:
     """ZFS: single fio job against the pool mountpoint."""
     log.info("=" * 60)
-    log.info("TIER: ZFS POOL (%s)", ZFS_POOL_NAME)
+    log.info("TIER: ZFS POOL (mount: %s)", zfs_mount)
     log.info("=" * 60)
     results["zfs"] = {}
 
-    if not Path(ZFS_MOUNT_POINT).is_mount():
-        log.error("ZFS mount %s not found — skipping ZFS tier.", ZFS_MOUNT_POINT)
+    if not Path(zfs_mount).is_mount():
+        log.error("ZFS mount %s not found — skipping ZFS tier.", zfs_mount)
         for p in PROFILES:
             results["zfs"][p] = {"per_drive": {}, "aggregated": {}}
         return
@@ -423,7 +189,7 @@ def run_zfs(runtime: int, results: dict, log_dir: Path) -> None:
         label = PROFILE_LABELS[profile_file]
         log.info("Profile: %s", label)
 
-        targets  = {"zfspool": f"{ZFS_MOUNT_POINT}/fio_test"}
+        targets  = {"zfspool": f"{zfs_mount}/fio_test"}
         profile_name = profile_file.replace(".fio", "")
         job_file = build_job_file(base, targets, runtime, log_dir, "zfs", profile_name)
         fio_out = run_fio(job_file, log_dir)
@@ -461,6 +227,10 @@ def parse_args():
     p.add_argument(
         "--runtime", type=int, default=RUNTIME_SECONDS,
         help="Runtime per profile in seconds (overrides RUNTIME_SECONDS)",
+    )
+    p.add_argument(
+        "--zfs-mount", type=str, default=ZFS_MOUNT_POINT,
+        help="ZFS pool mount point path",
     )
     p.add_argument(
         "--dry-run", action="store_true",
@@ -522,7 +292,7 @@ def main():
         run_xfs(drives, runtime, results, log_dir)
 
     if "zfs" in args.tiers:
-        run_zfs(runtime, results, log_dir)
+        run_zfs(runtime, results, log_dir, args.zfs_mount)
 
     # -- Persist results to logs directory ----------------------------------
     json_path = log_dir / f"fio_results_{ts}.json"
@@ -530,7 +300,7 @@ def main():
         json.dump(results, f, indent=2)
     log.info("JSON results  → %s", json_path)
 
-    table    = format_table(results, runtime)
+    table    = format_table(results, runtime, PROFILE_LABELS)
     txt_path = log_dir / f"fio_results_{ts}.txt"
     with open(txt_path, "w") as f:
         f.write(table)
