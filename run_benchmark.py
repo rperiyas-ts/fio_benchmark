@@ -96,6 +96,10 @@ def run_raw(drives: list[str], runtime: int, results: dict, log_dir: Path) -> No
     log.info("=" * 60)
     results["raw"] = {}
 
+    # Ensure no XFS filesystems are mounted on target drives
+    log.info("Checking for mounted filesystems on target drives...")
+    cleanup_xfs(drives, XFS_MOUNT_BASE)
+
     for profile_file in PROFILES:
         base  = PROFILES_DIR / "raw" / profile_file
         label = PROFILE_LABELS[profile_file]
